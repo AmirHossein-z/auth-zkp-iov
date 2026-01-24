@@ -1,0 +1,185 @@
+const G: bitstring [data].
+fun smult(bitstring, bitstring): bitstring.
+fun hash(bitstring): bitstring.
+fun padd(bitstring, bitstring): bitstring.
+fun psub(bitstring, bitstring): bitstring.
+
+free secureChannel: channel [private].
+free publicChannel: channel.
+
+event VehicleStartsAuth(bitstring).
+event TAAcceptsAuth(bitstring).
+
+query vid: bitstring; 
+    event(TAAcceptsAuth(vid)) ==> event(VehicleStartsAuth(vid)).
+
+event TAResponds(bitstring).
+event VehicleAcceptsTA(bitstring).
+
+query vid: bitstring;
+    event(VehicleAcceptsTA(vid)) ==> event(TAResponds(vid)).
+
+(* Replay attack - injective agreement *)
+query vid: bitstring; 
+    inj-event(TAAcceptsAuth(vid)) ==> inj-event(VehicleStartsAuth(vid)).
+
+query vid: bitstring;
+    inj-event(VehicleAcceptsTA(vid)) ==> inj-event(TAResponds(vid)).
+
+(* Man-in-the-Middle Attack Resistance *)
+query vid: bitstring;
+    event(TAAcceptsAuth(vid)) && event(VehicleAcceptsTA(vid)) ==>
+    event(VehicleStartsAuth(vid)).
+
+query attacker(new vid).
+query attacker(new F).
+query attacker(new alpha).
+query attacker(new beta).
+query attacker(new r).
+
+(* TA should be able to identify vehicle, but attacker cannot *)
+event TAIdentifiesVehicle(bitstring, bitstring).  (* vid, kpub *)
+
+query vid: bitstring, kpub: bitstring;
+    event(TAIdentifiesVehicle(vid, kpub)) ==> event(VehicleStartsAuth(vid)).
+
+query vid: bitstring;
+    attacker(vid) && event(VehicleStartsAuth(vid)) ==> false.
+
+(* IMPERSONATION ATTACK *)
+event AttackerTries(bitstring).
+event AttackerSucceeds(bitstring).
+
+query vid: bitstring;
+    event(AttackerSucceeds(vid)) ==> event(VehicleStartsAuth(vid)).
+
+let VehicleRegistration() =
+    new vid: bitstring;
+    
+    out(secureChannel, vid);
+    
+    in(secureChannel, (kpub: bitstring, u: bitstring, h: bitstring, 
+                        v: bitstring, rkey: bitstring));
+    
+    (* Allow multiple authentication sessions *)
+    !(
+        new F: bitstring;
+        new alpha: bitstring;
+        new beta: bitstring;
+        new session_id: bitstring;
+        
+        event VehicleStartsAuth(vid);
+        
+        (* A = F × G *)
+        let A = smult(F, G) in
+        
+        (* sigma = H(G||A||VID||kpub) *)
+        let sigma = hash((G, A, vid, kpub)) in
+        
+        (* phi = F + sigma × r *)
+        let sigma_r = smult(sigma, rkey) in
+        let phi = padd(F, sigma_r) in
+        
+        (* T1 = alpha × u *)
+        let T1 = smult(alpha, u) in
+        
+        (* T2 = beta × v *)
+        let T2 = smult(beta, v) in
+        
+        (* T3 = kpub + (alpha + beta) × h *)
+        let alpha_beta = padd(alpha, beta) in
+        let T3 = padd(kpub, smult(alpha_beta, h)) in
+        
+        out(publicChannel, (A, phi, T1, T2, T3));
+        
+        in(publicChannel, response: bitstring);
+        
+        let expected_response = hash((T1, T2, T3, vid)) in
+        if response = expected_response then
+        (
+            event VehicleAcceptsTA(vid);
+            0
+        )
+        else
+            0
+    ).
+
+let TARegistration() =
+    in(secureChannel, vid: bitstring);
+    
+    new r: bitstring;
+    new kesa1: bitstring;
+    new kesa2: bitstring;
+    
+    let kpub = smult(r, G) in
+    let u = smult(kesa2, G) in
+    let v = smult(kesa1, G) in
+    let h = smult(kesa1, smult(kesa2, G)) in
+    
+    out(secureChannel, (kpub, u, h, v, r));
+    
+    (* Handle multiple authentication requests *)
+    !(
+        in(publicChannel, (A: bitstring, phi: bitstring, T1: bitstring, 
+                           T2: bitstring, T3: bitstring));
+        
+        (* kpub from T1, T2, T3 *)
+        let kesa1_T1 = smult(kesa1, T1) in
+        let kesa2_T2 = smult(kesa2, T2) in
+        let sum = padd(kesa1_T1, kesa2_T2) in
+        let kpub_computed = psub(T3, sum) in
+        
+        (* if kpub_computed matches stored kpub *)
+        let kpub_expected = smult(r, G) in
+        
+        if kpub_computed = kpub_expected then
+        (
+            event TAIdentifiesVehicle(vid, kpub_computed);
+            
+            (* sigma = H(G||A||VID||kpub_computed) *)
+            let sigma = hash((G, A, vid, kpub_computed)) in
+            
+            let phi_G = smult(phi, G) in
+            let sigma_kpub = smult(sigma, kpub_computed) in
+            let P = psub(phi_G, sigma_kpub) in
+            
+            if P = A then
+            (
+                (* Authentication successful *)
+                event TAAcceptsAuth(vid);
+                event TAResponds(vid);
+                let response = hash((T1, T2, T3, vid)) in
+                out(publicChannel, response);
+                0
+            )
+            else
+                0
+        )
+        else
+            0
+    ).
+
+let Attacker() =
+    (* Attacker tries to impersonate by forging a message *)
+    new fake_vid: bitstring;
+    event AttackerTries(fake_vid);
+    
+    new fake_A: bitstring;
+    new fake_phi: bitstring;
+    new fake_T1: bitstring;
+    new fake_T2: bitstring;
+    new fake_T3: bitstring;
+    
+    out(publicChannel, (fake_A, fake_phi, fake_T1, fake_T2, fake_T3));
+    
+    (* If attacker gets accepted (shouldn't happen), mark it *)
+    in(publicChannel, response: bitstring);
+    event AttackerSucceeds(fake_vid);
+    0.
+
+process
+    (* Run multiple vehicle registrations and authentications *)
+    (! (VehicleRegistration() | TARegistration())) |
+    
+    (* Run attacker process to test impersonation resistance *)
+    (! Attacker())
