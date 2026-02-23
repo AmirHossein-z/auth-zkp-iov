@@ -4,6 +4,7 @@ Anonymous zero-knowledge authentication protocol in IoV
 # ns3 source codes
 The ns3 source codes can be found in ns3-source-codes directory.
 We use ns3 allinone V45 for running the codes.
+and python3.11
 
 
 ## traces

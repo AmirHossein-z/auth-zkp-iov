@@ -1,3 +1,6 @@
+type timestamp.
+fun get_timestamp(): timestamp.
+
 const G: bitstring [data].
 fun smult(bitstring, bitstring): bitstring.
 fun hash(bitstring): bitstring.
@@ -73,8 +76,11 @@ let VehicleRegistration() =
         (* A = F × G *)
         let A = smult(F, G) in
         
-        (* sigma = H(G||A||VID||kpub) *)
-        let sigma = hash((G, A, vid, kpub)) in
+        (* Get timestamp *)
+        let TS = get_timestamp() in
+        
+        (* sigma = H(G||A||VID||TS) *)
+        let sigma = hash((G, A, vid, TS)) in
         
         (* phi = F + sigma × r *)
         let sigma_r = smult(sigma, rkey) in
@@ -90,7 +96,8 @@ let VehicleRegistration() =
         let alpha_beta = padd(alpha, beta) in
         let T3 = padd(kpub, smult(alpha_beta, h)) in
         
-        out(publicChannel, (A, phi, T1, T2, T3));
+        (* Send message with TS *)
+        out(publicChannel, (A, phi, T1, T2, T3, TS));
         
         in(publicChannel, response: bitstring);
         
@@ -120,8 +127,9 @@ let TARegistration() =
     
     (* Handle multiple authentication requests *)
     !(
+        (* Receive message with TS *)
         in(publicChannel, (A: bitstring, phi: bitstring, T1: bitstring, 
-                           T2: bitstring, T3: bitstring));
+                        T2: bitstring, T3: bitstring, TS: timestamp));
         
         (* kpub from T1, T2, T3 *)
         let kesa1_T1 = smult(kesa1, T1) in
@@ -136,8 +144,8 @@ let TARegistration() =
         (
             event TAIdentifiesVehicle(vid, kpub_computed);
             
-            (* sigma = H(G||A||VID||kpub_computed) *)
-            let sigma = hash((G, A, vid, kpub_computed)) in
+            (* sigma = H(G||A||VID||TS) *)
+            let sigma = hash((G, A, vid, TS)) in
             
             let phi_G = smult(phi, G) in
             let sigma_kpub = smult(sigma, kpub_computed) in
@@ -169,8 +177,9 @@ let Attacker() =
     new fake_T1: bitstring;
     new fake_T2: bitstring;
     new fake_T3: bitstring;
+    let fake_TS = get_timestamp() in
     
-    out(publicChannel, (fake_A, fake_phi, fake_T1, fake_T2, fake_T3));
+    out(publicChannel, (fake_A, fake_phi, fake_T1, fake_T2, fake_T3, fake_TS));
     
     (* If attacker gets accepted (shouldn't happen), mark it *)
     in(publicChannel, response: bitstring);

@@ -200,6 +200,8 @@ struct AuthenticationRequest
     std::vector<uint8_t> T1;
     std::vector<uint8_t> T2;
     std::vector<uint8_t> T3;
+    uint64_t timestamp;
+
 };
 
 struct VehicleRegistrationData
@@ -268,7 +270,7 @@ BIGNUM* DeserializeBIGNUM(const std::vector<uint8_t>& data)
 std::vector<uint8_t> ComputeHash(const std::vector<uint8_t>& G_bytes,
                                   const std::vector<uint8_t>& A_bytes,
                                   uint64_t VID,
-                                  const std::vector<uint8_t>& kpub_bytes)
+                                  uint64_t timestamp)
 {
     std::vector<uint8_t> data;
     data.insert(data.end(), G_bytes.begin(), G_bytes.end());
@@ -278,7 +280,10 @@ std::vector<uint8_t> ComputeHash(const std::vector<uint8_t>& G_bytes,
     memcpy(vid_bytes, &VID, 8);
     data.insert(data.end(), vid_bytes, vid_bytes + 8);
 
-    data.insert(data.end(), kpub_bytes.begin(), kpub_bytes.end());
+    // Add timestamp
+    uint8_t ts_bytes[8];
+    memcpy(ts_bytes, &timestamp, 8);
+    data.insert(data.end(), ts_bytes, ts_bytes + 8);
 
     std::vector<uint8_t> hash(SHA256_DIGEST_LENGTH);
     SHA256(data.data(), data.size(), hash.data());
@@ -495,6 +500,10 @@ private:
         uint16_t t3_size = buffer[offset] | (buffer[offset + 1] << 8);
         offset += 2;
         req.T3 = std::vector<uint8_t>(buffer.begin() + offset, buffer.begin() + offset + t3_size);
+        offset += t3_size;
+
+        // Extract timestamp
+        memcpy(&req.timestamp, buffer.data() + offset, 8);
 
         return req;
     }
@@ -570,9 +579,8 @@ private:
         const EC_POINT* G = EC_GROUP_get0_generator(group);
         std::vector<uint8_t> G_bytes = SerializePoint(group, G);
 
-        // Compute sigma = H(G || A || VID || k_computed_pub)
-        std::vector<uint8_t> k_computed_pub_bytes = SerializePoint(group, k_computed_pub);
-        std::vector<uint8_t> sigma_hash = ComputeHash(G_bytes, authReq.A, matchedData->VID, k_computed_pub_bytes);
+        // Compute sigma = H(G || A || VID || TS)
+        std::vector<uint8_t> sigma_hash = ComputeHash(G_bytes, authReq.A, matchedData->VID, authReq.timestamp);
 
         // Convert hash to BIGNUM (use first 32 bytes as scalar)
         BIGNUM* sigma = BN_bin2bn(sigma_hash.data(), sigma_hash.size(), NULL);
@@ -764,9 +772,6 @@ private:
             m_regData.VID = m_vid;
             m_registered = true;
 
-            // NS_LOG_INFO("=== Vehicle Registration Complete ===");
-
-            // Simulator::Schedule(Seconds(1.0), &VehicleApplication::StartAuthentication, this);
             StartAuthentication();
         }
     }
@@ -778,8 +783,6 @@ private:
             NS_LOG_ERROR("Cannot authenticate: not registered");
             return;
         }
-
-        // NS_LOG_INFO("=== Starting Authentication Phase ===");
 
         EC_KEY* eckey = EC_KEY_new_by_curve_name(NID_secp256k1);
         const EC_GROUP* group = EC_KEY_get0_group(eckey);
@@ -797,8 +800,11 @@ private:
         std::vector<uint8_t> A_bytes = SerializePoint(group, A);
         std::vector<uint8_t> G_bytes = SerializePoint(group, G);
 
-        // Compute sigma = H(G || A || VID || kpub)
-        std::vector<uint8_t> sigma_hash = ComputeHash(G_bytes, A_bytes, m_vid, m_regData.kpub);
+        // Generate timestamp
+        uint64_t timestamp = static_cast<uint64_t>(Simulator::Now().GetMicroSeconds());
+
+        // Compute sigma = H(G || A || VID || TS)
+        std::vector<uint8_t> sigma_hash = ComputeHash(G_bytes, A_bytes, m_vid, timestamp);
         BIGNUM* sigma = BN_bin2bn(sigma_hash.data(), sigma_hash.size(), NULL);
         BN_mod(sigma, sigma, EC_GROUP_get0_order(group), ctx);
 
@@ -843,6 +849,8 @@ private:
         authReq.T1 = SerializePoint(group, T1);
         authReq.T2 = SerializePoint(group, T2);
         authReq.T3 = SerializePoint(group, T3);
+        authReq.timestamp = timestamp;
+
 
         // Store for verification
         m_lastT1 = authReq.T1;
@@ -905,6 +913,11 @@ private:
         requestData.push_back(t3_size & 0xFF);
         requestData.push_back((t3_size >> 8) & 0xFF);
         requestData.insert(requestData.end(), authReq.T3.begin(), authReq.T3.end());
+
+        // Timestamp
+        uint8_t ts_bytes[8];
+        memcpy(ts_bytes, &authReq.timestamp, 8);
+        requestData.insert(requestData.end(), ts_bytes, ts_bytes + 8);
 
         g_metrics.authAttempts++;
         g_metrics.vehicleMetrics[m_vid].authStartTime = Simulator::Now().GetSeconds();
@@ -1024,7 +1037,7 @@ void DistributeTAsInGrid(NodeContainer& taNodes,
 int main(int argc, char* argv[])
 {
     std::string traceFile = "scratch/traces.csv";
-    uint32_t maxVehicles = 50;
+    uint32_t maxVehicles = 200;
     uint32_t nTAs = 0;
     double simTime = 3000.0;
     double txPower = 33.0;
